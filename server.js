@@ -47,7 +47,9 @@ function createRoom(roomId) {
     roundCount: 0,
     baseAmount: ROOM_BASE,
     countdown: null,
-    hasPlayedFirstRound: false   // 是否已经完成过第一轮（用于自动准备）
+    hasPlayedFirstRound: false,  // 是否已经完成过第一轮（用于自动准备）
+    grabBankerStartTime: null,   // 抢庄阶段开始时间戳
+    grabBankerTimeout: 10        // 抢庄倒计时秒数
   };
 }
 
@@ -117,12 +119,14 @@ function startGrabBankerPhase(room) {
   room.grabBankerResponses.clear();
   room.grabBankerPlayers = [];
   room.roundCount++;
+  room.grabBankerStartTime = Date.now();
+  room.grabBankerTimeout = 10;
 
   broadcastRoomState(room);
   io.to(room.id).emit('phase_change', {
     phase: PHASE.GRAB_BANKER,
     message: '抢庄阶段 - 请选择是否抢庄',
-    timeout: 10
+    timeout: room.grabBankerTimeout
   });
 
   room.countdown = setTimeout(() => {
@@ -132,7 +136,7 @@ function startGrabBankerPhase(room) {
       }
     }
     resolveGrabBanker(room);
-  }, 10000);
+  }, room.grabBankerTimeout * 1000);
 }
 
 function resolveGrabBanker(room) {
@@ -431,7 +435,7 @@ function checkAllReady(room) {
 io.on('connection', (socket) => {
   console.log(`玩家连接: ${socket.id}`);
 
-  // 加入房间
+  // 加入房间（允许在等待阶段和抢庄阶段加入）
   socket.on('join_room', ({ roomId, nickname }) => {
     if (!roomId || !nickname) {
       socket.emit('error_msg', { message: '请输入房间号和昵称' });
@@ -449,8 +453,10 @@ io.on('connection', (socket) => {
       rooms.set(roomId, room);
     }
 
-    if (room.phase !== PHASE.WAITING) {
-      socket.emit('error_msg', { message: '游戏正在进行中，请等待本轮结束' });
+    // 允许在等待阶段和抢庄阶段加入
+    const canJoin = (room.phase === PHASE.WAITING || room.phase === PHASE.GRAB_BANKER);
+    if (!canJoin) {
+      socket.emit('error_msg', { message: '游戏正在进行中，请等待下一轮抢庄时加入' });
       return;
     }
 
@@ -476,7 +482,27 @@ io.on('connection', (socket) => {
     console.log(`${nickname} 加入房间 ${roomId}`);
 
     socket.emit('joined', { playerId, roomId, nickname });
-    broadcastRoomState(room);
+
+    // 如果在抢庄阶段加入，同步状态给新玩家
+    if (room.phase === PHASE.GRAB_BANKER) {
+      // 新玩家自动设为已准备（因为游戏已经在进行）
+      player.ready = true;
+
+      broadcastRoomState(room);
+
+      // 计算剩余倒计时，让新玩家的倒计时与其他玩家同步
+      const elapsed = (Date.now() - room.grabBankerStartTime) / 1000;
+      const remaining = Math.max(1, Math.ceil(room.grabBankerTimeout - elapsed));
+
+      socket.emit('phase_change', {
+        phase: PHASE.GRAB_BANKER,
+        message: '抢庄阶段 - 请选择是否抢庄',
+        timeout: remaining
+      });
+    } else {
+      broadcastRoomState(room);
+    }
+
     io.to(roomId).emit('system_msg', { message: `${nickname} 加入了房间` });
   });
 
@@ -512,7 +538,8 @@ io.on('connection', (socket) => {
       message: `${player.nickname} ${grab ? '抢庄' : '不抢'}`
     });
 
-    if (room.grabBankerResponses.size === room.players.size) {
+    // 检查所有玩家（含新加入的）是否都回应了
+    if (room.grabBankerResponses.size >= room.players.size) {
       resolveGrabBanker(room);
     }
   });
@@ -647,8 +674,11 @@ io.on('connection', (socket) => {
       message: `${player.nickname} 向 ${targetPlayer.nickname} 扔了 ${throwCount} 个${itemNames[itemType]} ${itemEmojis[itemType]}`
     });
 
-    // 更新积分显示
-    broadcastRoomState(room);
+    // 只发送积分更新，不触发完整的 room_state（避免牌面刷新）
+    io.to(room.id).emit('points_update', {
+      playerId: info.playerId,
+      points: player.points
+    });
   });
 
   // 聊天

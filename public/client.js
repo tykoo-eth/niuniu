@@ -17,6 +17,7 @@ let countdownTimer = null;
 let isBanker = false;
 let allPlayers = [];     // 完整玩家列表（含座位号）
 let currentBankerId = null;
+let cardsRendered = false; // 防止手牌重复渲染
 
 // ======================== DOM 元素 ========================
 
@@ -127,6 +128,28 @@ function setupSocketEvents() {
   socket.on('throw_item_effect', (data) => {
     showThrowAnimation(data);
   });
+
+  // 积分更新（扔道具后只更新积分，不刷新整个状态）
+  socket.on('points_update', ({ playerId, points }) => {
+    // 更新本地玩家列表中的积分
+    const p = allPlayers.find(pl => pl.id === playerId);
+    if (p) p.points = points;
+
+    // 如果是自己，更新UI显示
+    if (playerId === myId) {
+      myPoints.textContent = points;
+      myPointsTop.textContent = points;
+    }
+
+    // 更新对方头像旁的积分显示（不重建DOM，只更新文字）
+    const seats = document.querySelectorAll('.player-seat');
+    seats.forEach(seat => {
+      if (seat.dataset.playerId === playerId) {
+        const ptsEl = seat.querySelector('.player-points-display');
+        if (ptsEl) ptsEl.textContent = `⭐ ${points}`;
+      }
+    });
+  });
 }
 
 // ======================== 更新界面 ========================
@@ -164,11 +187,14 @@ function updateRoomState(state) {
   // 其他玩家
   renderOtherPlayers(state.players.filter(p => p.id !== state.myId), state);
 
-  // 手牌
+  // 手牌：只在首次收到牌时渲染，之后不再重复渲染（防止扔道具等操作触发刷新）
   if (state.myCards && state.myCards.length > 0) {
-    myCards = state.myCards;
-    if (currentPhase === 'deal_cards' || currentPhase === 'split_cards') {
-      renderMyCards(true);
+    if (!cardsRendered) {
+      myCards = state.myCards;
+      if (currentPhase === 'deal_cards' || currentPhase === 'split_cards') {
+        renderMyCards(true);
+        cardsRendered = true;
+      }
     }
   }
 
@@ -275,21 +301,47 @@ function closeThrowMenu() {
 }
 
 function showThrowAnimation(data) {
-  const { itemEmoji, count, targetNickname, fromNickname } = data;
+  const { itemEmoji, count, targetId } = data;
   const container = throwEffects;
+
+  // 找到目标玩家的头像位置
+  let targetRect = null;
+
+  // 先在其他玩家区域查找
+  const seats = document.querySelectorAll('.player-seat');
+  for (const seat of seats) {
+    if (seat.dataset.playerId === targetId) {
+      const avatar = seat.querySelector('.player-avatar');
+      if (avatar) targetRect = avatar.getBoundingClientRect();
+      break;
+    }
+  }
+
+  // 如果目标是自己，使用自己的头像
+  if (!targetRect && targetId === myId) {
+    const myAvatarEl = $('my-avatar');
+    if (myAvatarEl) targetRect = myAvatarEl.getBoundingClientRect();
+  }
+
+  // 如果找不到目标位置，用屏幕中心
+  if (!targetRect) {
+    targetRect = { left: window.innerWidth / 2 - 25, top: window.innerHeight / 2 - 25, width: 50, height: 50 };
+  }
+
+  const centerX = targetRect.left + targetRect.width / 2;
+  const centerY = targetRect.top + targetRect.height / 2;
 
   for (let i = 0; i < Math.min(count, 20); i++) {
     setTimeout(() => {
       const el = document.createElement('div');
       el.className = 'throw-emoji';
       el.textContent = itemEmoji;
-      // 随机位置偏移
-      el.style.left = (30 + Math.random() * 40) + '%';
-      el.style.top = (20 + Math.random() * 40) + '%';
-      el.style.animationDelay = (Math.random() * 0.2) + 's';
+      // 定位到目标头像附近（加随机偏移让多个不完全重叠）
+      el.style.left = (centerX - 24 + (Math.random() - 0.5) * 60) + 'px';
+      el.style.top = (centerY - 24 + (Math.random() - 0.5) * 60) + 'px';
       container.appendChild(el);
       setTimeout(() => el.remove(), 1500);
-    }, i * 80);
+    }, i * 100);
   }
 }
 
@@ -435,6 +487,7 @@ function handlePhaseChange(data) {
 
   switch (data.phase) {
     case 'grab_banker':
+      cardsRendered = false; // 新一轮开始，重置
       showGrabBankerUI(data);
       startCountdown(data.timeout);
       break;
@@ -580,6 +633,7 @@ function showResult(data) {
     myHandType.textContent = '';
     myCards = [];
     selectedIndices = [];
+    cardsRendered = false; // 新一轮重置，允许下次发牌时渲染
   }, 8000);
 }
 
