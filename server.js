@@ -49,16 +49,21 @@ function createRoom(roomId) {
     countdown: null,
     hasPlayedFirstRound: false,  // 是否已经完成过第一轮（用于自动准备）
     grabBankerStartTime: null,   // 抢庄阶段开始时间戳
-    grabBankerTimeout: 10        // 抢庄倒计时秒数
+    grabBankerTimeout: 10,       // 抢庄倒计时秒数
+    phaseStartTime: null,        // 当前阶段开始时间戳（通用）
+    phaseTimeout: 0,             // 当前阶段倒计时秒数（通用）
+    paused: false,               // 庄家暂停标记
+    pausedPhase: null,           // 暂停时所处的阶段
+    pausedRemainingMs: null      // 暂停时剩余的倒计时毫秒数
   };
 }
 
-function createPlayer(id, nickname, socketId) {
+function createPlayer(id, nickname, socketId, initialCoins) {
   return {
     id,
     nickname,
     socketId,
-    coins: BASE_COINS,
+    coins: initialCoins || BASE_COINS,
     points: 0,                   // 互动积分
     ready: false,
     betTargets: [],              // 下注对象列表
@@ -100,7 +105,8 @@ function broadcastRoomState(room) {
       banker: room.banker,
       myId: pid,
       roundCount: room.roundCount,
-      baseAmount: room.baseAmount
+      baseAmount: room.baseAmount,
+      paused: room.paused
     });
   }
 }
@@ -121,6 +127,8 @@ function startGrabBankerPhase(room) {
   room.roundCount++;
   room.grabBankerStartTime = Date.now();
   room.grabBankerTimeout = 10;
+  room.phaseStartTime = Date.now();
+  room.phaseTimeout = 10;
 
   broadcastRoomState(room);
   io.to(room.id).emit('phase_change', {
@@ -178,6 +186,8 @@ function resolveGrabBanker(room) {
 function startChooseBetPhase(room) {
   room.phase = PHASE.CHOOSE_BET;
   room.betResponses.clear();
+  room.phaseStartTime = Date.now();
+  room.phaseTimeout = 10;
 
   // 庄家自动完成（庄家不需要选择下注对象）
   room.betResponses.set(room.banker, []);
@@ -247,6 +257,8 @@ function startSplitPhase(room) {
   clearTimers(room);
   room.phase = PHASE.SPLIT_CARDS;
   room.splitResponses.clear();
+  room.phaseStartTime = Date.now();
+  room.phaseTimeout = 20;
 
   broadcastRoomState(room);
 
@@ -387,6 +399,9 @@ function resolveRound(room) {
     room.evaluations.clear();
     room.splitResponses.clear();
     room.betResponses.clear();
+    room.paused = false;
+    room.pausedPhase = null;
+    room.pausedRemainingMs = null;
 
     // 重置下注对象
     for (const [, p] of room.players) {
@@ -436,7 +451,7 @@ io.on('connection', (socket) => {
   console.log(`玩家连接: ${socket.id}`);
 
   // 加入房间（允许在等待阶段和抢庄阶段加入）
-  socket.on('join_room', ({ roomId, nickname }) => {
+  socket.on('join_room', ({ roomId, nickname, coins: requestedCoins }) => {
     if (!roomId || !nickname) {
       socket.emit('error_msg', { message: '请输入房间号和昵称' });
       return;
@@ -473,7 +488,8 @@ io.on('connection', (socket) => {
     }
 
     const playerId = `p_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    const player = createPlayer(playerId, nickname, socket.id);
+    const initialCoins = Math.min(Math.max(parseInt(requestedCoins) || BASE_COINS, 100), 9999999);
+    const player = createPlayer(playerId, nickname, socket.id, initialCoins);
     room.players.set(playerId, player);
 
     playerSockets.set(socket.id, { roomId, playerId, nickname });
@@ -541,6 +557,122 @@ io.on('connection', (socket) => {
     // 检查所有玩家（含新加入的）是否都回应了
     if (room.grabBankerResponses.size >= room.players.size) {
       resolveGrabBanker(room);
+    }
+  });
+
+  // 庄家暂停游戏
+  socket.on('pause_game', () => {
+    const info = playerSockets.get(socket.id);
+    if (!info) return;
+    const room = rooms.get(info.roomId);
+    if (!room) return;
+
+    // 只有庄家可以暂停
+    if (info.playerId !== room.banker) {
+      socket.emit('error_msg', { message: '只有庄家可以暂停游戏' });
+      return;
+    }
+
+    // 只有在游戏进行中才能暂停（排除等待和结算阶段）
+    if (room.phase === PHASE.WAITING || room.phase === PHASE.SHOW_RESULT || room.paused) {
+      return;
+    }
+
+    room.paused = true;
+    room.pausedPhase = room.phase;
+
+    // 取消当前倒计时，并记录剩余时间
+    if (room.countdown) {
+      clearTimeout(room.countdown);
+      room.countdown = null;
+    }
+
+    // 根据阶段计算剩余时间
+    let remainingMs = 0;
+    const now = Date.now();
+    if (room.phase === PHASE.GRAB_BANKER && room.grabBankerStartTime) {
+      const elapsed = now - room.grabBankerStartTime;
+      remainingMs = Math.max(0, room.grabBankerTimeout * 1000 - elapsed);
+    } else if (room.phaseStartTime && room.phaseTimeout) {
+      const elapsed = now - room.phaseStartTime;
+      remainingMs = Math.max(0, room.phaseTimeout * 1000 - elapsed);
+    }
+    room.pausedRemainingMs = remainingMs;
+
+    const bankerPlayer = room.players.get(room.banker);
+    io.to(room.id).emit('game_paused', {
+      bankerNickname: bankerPlayer.nickname
+    });
+    io.to(room.id).emit('system_msg', {
+      message: `庄家 ${bankerPlayer.nickname} 暂停了游戏`
+    });
+  });
+
+  // 庄家恢复游戏
+  socket.on('resume_game', () => {
+    const info = playerSockets.get(socket.id);
+    if (!info) return;
+    const room = rooms.get(info.roomId);
+    if (!room) return;
+
+    // 只有庄家可以恢复
+    if (info.playerId !== room.banker) {
+      socket.emit('error_msg', { message: '只有庄家可以恢复游戏' });
+      return;
+    }
+
+    if (!room.paused) return;
+
+    room.paused = false;
+    const pausedPhase = room.pausedPhase;
+    const remainingMs = room.pausedRemainingMs || 0;
+    room.pausedPhase = null;
+    room.pausedRemainingMs = null;
+
+    const bankerPlayer = room.players.get(room.banker);
+    io.to(room.id).emit('game_resumed', {
+      phase: pausedPhase,
+      remainingSeconds: Math.ceil(remainingMs / 1000)
+    });
+    io.to(room.id).emit('system_msg', {
+      message: `庄家 ${bankerPlayer.nickname} 恢复了游戏`
+    });
+
+    // 根据暂停时的阶段恢复倒计时
+    if (pausedPhase === PHASE.GRAB_BANKER) {
+      room.grabBankerStartTime = Date.now();
+      room.grabBankerTimeout = Math.max(1, Math.ceil(remainingMs / 1000));
+      room.countdown = setTimeout(() => {
+        for (const [pid] of room.players) {
+          if (!room.grabBankerResponses.has(pid)) {
+            room.grabBankerResponses.set(pid, false);
+          }
+        }
+        resolveGrabBanker(room);
+      }, remainingMs);
+    } else if (pausedPhase === PHASE.CHOOSE_BET) {
+      room.countdown = setTimeout(() => {
+        for (const [pid] of room.players) {
+          if (pid !== room.banker && !room.betResponses.has(pid)) {
+            room.betResponses.set(pid, [pid]);
+            room.players.get(pid).betTargets = [pid];
+          }
+        }
+        startDealPhase(room);
+      }, remainingMs > 0 ? remainingMs : 1000);
+    } else if (pausedPhase === PHASE.SPLIT_CARDS) {
+      room.countdown = setTimeout(() => {
+        for (const [pid] of room.players) {
+          if (!room.splitResponses.has(pid)) {
+            const eval_ = room.evaluations.get(pid);
+            room.splitResponses.set(pid, {
+              group3: eval_.group3,
+              auto: true
+            });
+          }
+        }
+        resolveRound(room);
+      }, remainingMs > 0 ? remainingMs : 1000);
     }
   });
 

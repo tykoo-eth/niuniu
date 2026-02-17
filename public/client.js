@@ -18,6 +18,7 @@ let isBanker = false;
 let allPlayers = [];     // 完整玩家列表（含座位号）
 let currentBankerId = null;
 let cardsRendered = false; // 防止手牌重复渲染
+let gamePaused = false;    // 游戏是否已暂停
 
 // ======================== DOM 元素 ========================
 
@@ -53,6 +54,10 @@ const countdownContainer = $('countdown-container');
 const countdownNumber = $('countdown-number');
 const countdownProgress = $('countdown-progress');
 const throwEffects = $('throw-effects');
+const pauseBtn = $('pause-btn');
+const pauseOverlay = $('pause-overlay');
+const pauseSubtitle = $('pause-subtitle');
+const resumeBtn = $('resume-btn');
 
 // ======================== 初始化 ========================
 
@@ -75,10 +80,15 @@ function init() {
 function joinRoom() {
   const nickname = nicknameInput.value.trim();
   const roomId = roomInput.value.trim();
+  const coinsInput = $('coins-input');
+  const coins = parseInt(coinsInput.value) || 10000;
+
   if (!nickname) { showToast('请输入昵称'); return; }
   if (!roomId) { showToast('请输入房间号'); return; }
+  if (coins < 100) { showToast('白银数额至少为 100'); return; }
+  if (coins > 9999999) { showToast('白银数额不能超过 9999999'); return; }
 
-  socket.emit('join_room', { roomId, nickname });
+  socket.emit('join_room', { roomId, nickname, coins });
 }
 
 // ======================== Socket 事件 ========================
@@ -129,6 +139,37 @@ function setupSocketEvents() {
     showThrowAnimation(data);
   });
 
+  // 游戏暂停
+  socket.on('game_paused', ({ bankerNickname }) => {
+    gamePaused = true;
+    clearCountdown();
+    pauseOverlay.style.display = 'flex';
+    pauseSubtitle.textContent = `庄家 ${bankerNickname} 暂停了游戏，请等待恢复...`;
+
+    if (isBanker) {
+      resumeBtn.style.display = 'inline-block';
+      pauseBtn.textContent = '▶ 恢复';
+      pauseBtn.classList.add('is-paused');
+    } else {
+      resumeBtn.style.display = 'none';
+    }
+  });
+
+  // 游戏恢复
+  socket.on('game_resumed', ({ phase, remainingSeconds }) => {
+    gamePaused = false;
+    pauseOverlay.style.display = 'none';
+
+    if (isBanker) {
+      pauseBtn.textContent = '⏸ 暂停';
+      pauseBtn.classList.remove('is-paused');
+    }
+
+    if (remainingSeconds > 0) {
+      startCountdown(remainingSeconds);
+    }
+  });
+
   // 积分更新（扔道具后只更新积分，不刷新整个状态）
   socket.on('points_update', ({ playerId, points }) => {
     // 更新本地玩家列表中的积分
@@ -168,6 +209,23 @@ function updateRoomState(state) {
     myCoinsTop.textContent = me.coins;
     myPointsTop.textContent = me.points;
     isBanker = me.isBanker;
+  }
+
+  // 庄家暂停按钮：只在游戏进行中且我是庄家时显示
+  const inGame = state.phase !== 'waiting' && state.phase !== 'show_result';
+  if (isBanker && inGame) {
+    pauseBtn.style.display = 'block';
+  } else {
+    pauseBtn.style.display = 'none';
+  }
+
+  // 同步暂停状态
+  if (state.paused && !gamePaused) {
+    gamePaused = true;
+    pauseOverlay.style.display = 'flex';
+    if (isBanker) {
+      resumeBtn.style.display = 'inline-block';
+    }
   }
 
   // 准备按钮
@@ -488,6 +546,9 @@ function handlePhaseChange(data) {
   switch (data.phase) {
     case 'grab_banker':
       cardsRendered = false; // 新一轮开始，重置
+      gamePaused = false;
+      pauseOverlay.style.display = 'none';
+      pauseBtn.classList.remove('is-paused');
       showGrabBankerUI(data);
       startCountdown(data.timeout);
       break;
@@ -592,6 +653,15 @@ function confirmBet() {
   `;
 }
 
+function togglePause() {
+  if (!isBanker) return;
+  if (gamePaused) {
+    socket.emit('resume_game');
+  } else {
+    socket.emit('pause_game');
+  }
+}
+
 function toggleReady() {
   socket.emit('ready');
 }
@@ -610,6 +680,8 @@ function showResult(data) {
   actionPanel.style.display = 'none';
   resultPanel.style.display = 'block';
   resultPanel.classList.add('show');
+  // 结算时隐藏暂停按钮
+  pauseBtn.style.display = 'none';
 
   const splitActions = document.querySelector('.split-actions');
   if (splitActions) splitActions.remove();
