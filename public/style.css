@@ -226,7 +226,12 @@ body {
   gap: 10px;
 }
 
-.room-badge, .round-badge, .base-badge {
+.my-stats-bar {
+  display: flex;
+  gap: 10px;
+}
+
+.room-badge, .round-badge, .base-badge, .coins-badge, .points-badge {
   padding: 4px 12px;
   border-radius: 20px;
   font-size: 13px;
@@ -249,6 +254,18 @@ body {
   background: rgba(39, 174, 96, 0.15);
   color: var(--green);
   border: 1px solid rgba(39, 174, 96, 0.3);
+}
+
+.coins-badge {
+  background: rgba(255, 215, 0, 0.15);
+  color: var(--gold);
+  border: 1px solid rgba(255, 215, 0, 0.3);
+}
+
+.points-badge {
+  background: rgba(155, 89, 182, 0.15);
+  color: #bb86fc;
+  border: 1px solid rgba(155, 89, 182, 0.3);
 }
 
 .phase-display {
@@ -279,6 +296,7 @@ body {
   border: 2px solid rgba(255, 255, 255, 0.08);
   min-width: 120px;
   transition: all 0.3s;
+  position: relative;
 }
 
 .player-seat.is-banker {
@@ -338,6 +356,11 @@ body {
   color: var(--gold);
 }
 
+.player-points-display {
+  font-size: 11px;
+  color: #bb86fc;
+}
+
 .player-status {
   font-size: 11px;
   padding: 2px 8px;
@@ -355,37 +378,24 @@ body {
   color: var(--text-muted);
 }
 
-.player-cards-mini {
-  display: flex;
-  gap: 3px;
+/* 互动按钮 */
+.throw-btns {
   margin-top: 4px;
 }
 
-.mini-card {
-  width: 28px;
-  height: 38px;
-  border-radius: 4px;
-  background: linear-gradient(135deg, #2c3e50, #34495e);
+.throw-btn {
+  background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.15);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 700;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.mini-card.revealed {
-  background: white;
-  color: var(--card-black);
-}
-
-.mini-card.revealed.red {
-  color: var(--card-red);
-}
-
-.mini-card.group3 {
-  border-color: var(--blue);
-  box-shadow: 0 0 6px rgba(52, 152, 219, 0.4);
+.throw-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.1);
 }
 
 /* 游戏桌面 */
@@ -456,7 +466,7 @@ body {
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: var(--shadow-lg);
-  max-width: 500px;
+  max-width: 520px;
   width: 90%;
 }
 
@@ -484,6 +494,134 @@ body {
   min-width: 80px;
   font-size: 16px;
   padding: 12px 28px;
+}
+
+/* ======================== 下注对象选择 ======================== */
+.bet-targets-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  width: 100%;
+}
+
+.bet-target-label {
+  cursor: pointer;
+  display: block;
+}
+
+.bet-target-label input[type="checkbox"] {
+  display: none;
+}
+
+.bet-target-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: 14px;
+  transition: all 0.2s;
+  min-width: 90px;
+}
+
+.bet-target-label input:checked + .bet-target-box {
+  border-color: var(--gold);
+  background: rgba(255, 215, 0, 0.1);
+  box-shadow: 0 0 15px rgba(255, 215, 0, 0.2);
+}
+
+.bet-target-seat {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.bet-target-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-white);
+}
+
+/* ======================== 互动道具 ======================== */
+.btn-throw {
+  font-size: 18px;
+  padding: 10px 20px;
+  border-radius: 12px;
+  min-width: 90px;
+}
+
+.btn-throw.egg {
+  background: linear-gradient(135deg, #f39c12, #e67e22);
+}
+
+.btn-throw.poop {
+  background: linear-gradient(135deg, #8d6e63, #5d4037);
+}
+
+.btn-throw.flower {
+  background: linear-gradient(135deg, #e91e63, #c2185b);
+}
+
+.throw-count-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.throw-count-row label {
+  color: var(--text-muted);
+}
+
+.throw-count-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--gold);
+  min-width: 30px;
+  text-align: center;
+}
+
+.throw-count-adj {
+  padding: 4px 12px !important;
+  font-size: 14px !important;
+  min-width: auto !important;
+}
+
+/* 扔道具动画层 */
+.throw-effects {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 300;
+  overflow: hidden;
+}
+
+.throw-emoji {
+  position: absolute;
+  font-size: 48px;
+  animation: throwAnim 1.2s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes throwAnim {
+  0% {
+    opacity: 1;
+    transform: scale(0.3) rotate(0deg);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.3) rotate(180deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.8) rotate(360deg) translateY(60px);
+  }
 }
 
 /* 结果面板 */
@@ -603,11 +741,17 @@ body {
   text-align: center;
 }
 
+.result-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 100px;
+}
+
 .result-coins-change {
   font-size: 16px;
   font-weight: 700;
-  min-width: 100px;
-  text-align: right;
 }
 
 .result-coins-change.positive {
@@ -616,6 +760,11 @@ body {
 
 .result-coins-change.negative {
   color: var(--red);
+}
+
+.result-bet-details {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* 我的区域 */
@@ -928,8 +1077,34 @@ body {
   animation: resultIn 0.5s ease forwards;
 }
 
-/* 响应式 */
+/* 确认分牌按钮 */
+.btn-confirm-split {
+  background: linear-gradient(135deg, var(--gold), #ffa500);
+  color: #1a1a1a;
+  padding: 10px 30px;
+  font-size: 15px;
+}
+
+.btn-auto-split {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  padding: 10px 30px;
+  font-size: 15px;
+}
+
+/* 选中计数 */
+.selection-count {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+/* ======================== 响应式 ======================== */
 @media (max-width: 768px) {
+  .top-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
   .other-players {
     gap: 8px;
     padding: 8px 10px;
@@ -961,6 +1136,13 @@ body {
   .action-panel {
     padding: 20px;
   }
+  .bet-targets-grid {
+    gap: 6px;
+  }
+  .bet-target-box {
+    padding: 8px 12px;
+    min-width: 70px;
+  }
 }
 
 /* 滚动条 */
@@ -973,38 +1155,4 @@ body {
 ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
   border-radius: 4px;
-}
-
-/* 多倍数选择按钮的特殊样式 */
-.multi-btn {
-  position: relative;
-  overflow: hidden;
-}
-
-.multi-btn::after {
-  content: 'x';
-  font-size: 11px;
-  opacity: 0.7;
-}
-
-/* 确认分牌按钮 */
-.btn-confirm-split {
-  background: linear-gradient(135deg, var(--gold), #ffa500);
-  color: #1a1a1a;
-  padding: 10px 30px;
-  font-size: 15px;
-}
-
-.btn-auto-split {
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  padding: 10px 30px;
-  font-size: 15px;
-}
-
-/* 选中计数 */
-.selection-count {
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
-  margin-top: 6px;
 }

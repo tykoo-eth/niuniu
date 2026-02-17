@@ -17,35 +17,37 @@ const playerSockets = new Map(); // socketId -> { roomId, playerId, nickname }
 
 const BASE_COINS = 10000;     // 每个玩家初始金币
 const ROOM_BASE = 100;        // 房间基数
+const WIN_POINTS_REWARD = 10; // 赢一局奖励积分
 
 /**
  * 游戏阶段
  */
 const PHASE = {
-  WAITING: 'waiting',         // 等待玩家加入
-  GRAB_BANKER: 'grab_banker', // 抢庄阶段
-  CHOOSE_MULTI: 'choose_multi', // 选倍数阶段
-  DEAL_CARDS: 'deal_cards',   // 发牌/看牌阶段
-  SPLIT_CARDS: 'split_cards', // 分牌阶段
-  SHOW_RESULT: 'show_result'  // 展示结果
+  WAITING: 'waiting',           // 等待玩家加入
+  GRAB_BANKER: 'grab_banker',   // 抢庄阶段
+  CHOOSE_BET: 'choose_bet',     // 选下注对象阶段（替代原来的选倍数）
+  DEAL_CARDS: 'deal_cards',     // 发牌/看牌阶段
+  SPLIT_CARDS: 'split_cards',   // 分牌阶段
+  SHOW_RESULT: 'show_result'    // 展示结果
 };
 
 function createRoom(roomId) {
   return {
     id: roomId,
-    players: new Map(),   // playerId -> Player
+    players: new Map(),          // playerId -> Player
     phase: PHASE.WAITING,
-    banker: null,          // 庄家playerId
-    grabBankerPlayers: [], // 抢庄的玩家列表
+    banker: null,                // 庄家playerId
+    grabBankerPlayers: [],       // 抢庄的玩家列表
     grabBankerResponses: new Map(), // playerId -> bool
-    multiplierResponses: new Map(), // playerId -> number
-    hands: new Map(),      // playerId -> [cards]
-    evaluations: new Map(), // playerId -> evaluation
-    splitResponses: new Map(), // playerId -> group3 indices
+    betResponses: new Map(),     // playerId -> [targetPlayerIds] 下注对象
+    hands: new Map(),            // playerId -> [cards]
+    evaluations: new Map(),      // playerId -> evaluation
+    splitResponses: new Map(),   // playerId -> group3 indices
     results: null,
     roundCount: 0,
     baseAmount: ROOM_BASE,
-    countdown: null
+    countdown: null,
+    hasPlayedFirstRound: false   // 是否已经完成过第一轮（用于自动准备）
   };
 }
 
@@ -55,8 +57,9 @@ function createPlayer(id, nickname, socketId) {
     nickname,
     socketId,
     coins: BASE_COINS,
+    points: 0,                   // 互动积分
     ready: false,
-    multiplier: 1,
+    betTargets: [],              // 下注对象列表
     escaped: false,
     connected: true
   };
@@ -64,14 +67,19 @@ function createPlayer(id, nickname, socketId) {
 
 function getRoomPlayerList(room) {
   const list = [];
-  for (const [pid, p] of room.players) {
+  const playerIds = Array.from(room.players.keys());
+  for (let i = 0; i < playerIds.length; i++) {
+    const pid = playerIds[i];
+    const p = room.players.get(pid);
     list.push({
       id: pid,
       nickname: p.nickname,
       coins: p.coins,
+      points: p.points,
       ready: p.ready,
       isBanker: room.banker === pid,
-      connected: p.connected
+      connected: p.connected,
+      seatIndex: i + 1            // 座位号，从1开始
     });
   }
   return list;
@@ -117,7 +125,6 @@ function startGrabBankerPhase(room) {
     timeout: 10
   });
 
-  // 10秒超时自动处理
   room.countdown = setTimeout(() => {
     for (const [pid] of room.players) {
       if (!room.grabBankerResponses.has(pid)) {
@@ -131,13 +138,11 @@ function startGrabBankerPhase(room) {
 function resolveGrabBanker(room) {
   clearTimers(room);
 
-  // 收集抢庄玩家
   room.grabBankerPlayers = [];
   for (const [pid, grabbed] of room.grabBankerResponses) {
     if (grabbed) room.grabBankerPlayers.push(pid);
   }
 
-  // 如果没人抢庄，随机指定
   if (room.grabBankerPlayers.length === 0) {
     const allPlayers = Array.from(room.players.keys());
     room.banker = allPlayers[Math.floor(Math.random() * allPlayers.length)];
@@ -148,7 +153,6 @@ function resolveGrabBanker(room) {
       message: `无人抢庄，随机指定 ${bankerName} 为庄家`
     });
   } else {
-    // 在抢庄玩家中随机选择
     room.banker = room.grabBankerPlayers[
       Math.floor(Math.random() * room.grabBankerPlayers.length)
     ];
@@ -160,43 +164,59 @@ function resolveGrabBanker(room) {
     });
   }
 
-  // 进入选倍数阶段
-  setTimeout(() => startChooseMultiplierPhase(room), 2000);
+  setTimeout(() => startChooseBetPhase(room), 2000);
 }
 
-function startChooseMultiplierPhase(room) {
-  room.phase = PHASE.CHOOSE_MULTI;
-  room.multiplierResponses.clear();
+/**
+ * 选下注对象阶段（替代原来的选倍数）
+ * 闲家可以选择下注自己、其他闲家（不含庄家）
+ */
+function startChooseBetPhase(room) {
+  room.phase = PHASE.CHOOSE_BET;
+  room.betResponses.clear();
 
-  // 庄家自动倍数1
-  room.multiplierResponses.set(room.banker, 1);
-  room.players.get(room.banker).multiplier = 1;
+  // 庄家自动完成（庄家不需要选择下注对象）
+  room.betResponses.set(room.banker, []);
+
+  // 构建可下注对象列表（所有闲家，包含自己）
+  const betTargets = [];
+  const playerIds = Array.from(room.players.keys());
+  for (let i = 0; i < playerIds.length; i++) {
+    const pid = playerIds[i];
+    if (pid === room.banker) continue;
+    const p = room.players.get(pid);
+    betTargets.push({
+      id: pid,
+      nickname: p.nickname,
+      seatIndex: i + 1
+    });
+  }
 
   broadcastRoomState(room);
   io.to(room.id).emit('phase_change', {
-    phase: PHASE.CHOOSE_MULTI,
-    message: '闲家选择倍数',
-    timeout: 8,
-    bankerId: room.banker
+    phase: PHASE.CHOOSE_BET,
+    message: '选择下注对象',
+    timeout: 10,
+    bankerId: room.banker,
+    betTargets
   });
 
-  // 8秒超时
   room.countdown = setTimeout(() => {
     for (const [pid] of room.players) {
-      if (pid !== room.banker && !room.multiplierResponses.has(pid)) {
-        room.multiplierResponses.set(pid, 1);
-        room.players.get(pid).multiplier = 1;
+      if (pid !== room.banker && !room.betResponses.has(pid)) {
+        // 超时默认下注自己
+        room.betResponses.set(pid, [pid]);
+        room.players.get(pid).betTargets = [pid];
       }
     }
     startDealPhase(room);
-  }, 8000);
+  }, 10000);
 }
 
 function startDealPhase(room) {
   clearTimers(room);
   room.phase = PHASE.DEAL_CARDS;
 
-  // 发牌
   const playerIds = Array.from(room.players.keys());
   const hands = gameEngine.dealCards(playerIds.length);
   room.hands.clear();
@@ -204,7 +224,6 @@ function startDealPhase(room) {
     room.hands.set(pid, hands[idx]);
   });
 
-  // 自动评估所有手牌
   room.evaluations.clear();
   for (const [pid, cards] of room.hands) {
     room.evaluations.set(pid, gameEngine.evaluateHand(cards));
@@ -217,7 +236,6 @@ function startDealPhase(room) {
     timeout: 3
   });
 
-  // 3秒后进入分牌阶段
   room.countdown = setTimeout(() => startSplitPhase(room), 3000);
 }
 
@@ -228,7 +246,6 @@ function startSplitPhase(room) {
 
   broadcastRoomState(room);
 
-  // 给每个玩家发送他们的牌型评估（最佳分法提示）
   for (const [pid, p] of room.players) {
     if (!p.connected) continue;
     const eval_ = room.evaluations.get(pid);
@@ -240,7 +257,6 @@ function startSplitPhase(room) {
     });
   }
 
-  // 20秒超时自动使用最优分法
   room.countdown = setTimeout(() => {
     for (const [pid] of room.players) {
       if (!room.splitResponses.has(pid)) {
@@ -255,40 +271,91 @@ function startSplitPhase(room) {
   }, 20000);
 }
 
+/**
+ * 结算逻辑：基于下注对象的新结算方式
+ * 每个闲家可以下注多个闲家（含自己），每笔下注独立与庄家比较
+ */
 function resolveRound(room) {
   clearTimers(room);
   room.phase = PHASE.SHOW_RESULT;
 
   const bankerEval = room.evaluations.get(room.banker);
-  const players = [];
+  let bankerTotal = 0;
+
+  // 每个闲家的结算详情
+  const playerResults = [];
 
   for (const [pid, p] of room.players) {
     if (pid === room.banker) continue;
-    players.push({
-      playerId: pid,
+
+    const betTargets = p.betTargets || [pid]; // 默认下注自己
+    let totalChange = 0;
+    const betDetails = [];
+
+    for (const targetId of betTargets) {
+      const targetEval = room.evaluations.get(targetId);
+      if (!targetEval) continue;
+
+      const comparison = gameEngine.compareHands(targetEval, bankerEval);
+      const winnerEval = comparison > 0 ? targetEval : bankerEval;
+      const amount = room.baseAmount * winnerEval.multiplier;
+      const tax = Math.floor(amount * 0.05);
+
+      const targetPlayer = room.players.get(targetId);
+      if (comparison > 0) {
+        // 该笔下注赢了
+        const net = amount - tax;
+        totalChange += net;
+        bankerTotal -= amount;
+        betDetails.push({
+          targetId,
+          targetNickname: targetPlayer ? targetPlayer.nickname : '?',
+          targetHandName: targetEval.handName,
+          result: 'win',
+          amount: net
+        });
+      } else {
+        // 该笔下注输了
+        totalChange -= amount;
+        bankerTotal += amount - tax;
+        betDetails.push({
+          targetId,
+          targetNickname: targetPlayer ? targetPlayer.nickname : '?',
+          targetHandName: targetEval.handName,
+          result: 'lose',
+          amount: -amount
+        });
+      }
+    }
+
+    p.coins += totalChange;
+
+    // 积分奖励：总结算为正则赢，奖励10积分
+    if (totalChange > 0) {
+      p.points += WIN_POINTS_REWARD;
+    }
+
+    playerResults.push({
+      id: pid,
+      nickname: p.nickname,
+      cards: room.hands.get(pid),
       eval: room.evaluations.get(pid),
-      multiplier: p.multiplier
+      coinsChange: totalChange,
+      coins: p.coins,
+      points: p.points,
+      betTargets: betTargets,
+      betDetails,
+      betCount: betTargets.length
     });
   }
 
-  const results = gameEngine.calculateResults(bankerEval, players, room.baseAmount);
-
-  // 计算庄家总收益
-  let bankerTotal = 0;
-  for (const r of results) {
-    bankerTotal += r.bankerChange;
-  }
-
-  // 更新金币
+  // 庄家积分：如果庄家总收益为正也奖励
   const bankerPlayer = room.players.get(room.banker);
   bankerPlayer.coins += bankerTotal;
-
-  for (const r of results) {
-    const p = room.players.get(r.playerId);
-    p.coins += r.amount;
+  if (bankerTotal > 0) {
+    bankerPlayer.points += WIN_POINTS_REWARD;
   }
 
-  // 构建结果数据发送给所有玩家
   const resultData = {
     banker: {
       id: room.banker,
@@ -296,50 +363,67 @@ function resolveRound(room) {
       cards: room.hands.get(room.banker),
       eval: bankerEval,
       coinsChange: bankerTotal,
-      coins: bankerPlayer.coins
+      coins: bankerPlayer.coins,
+      points: bankerPlayer.points
     },
-    players: results.map(r => {
-      const p = room.players.get(r.playerId);
-      return {
-        id: r.playerId,
-        nickname: p.nickname,
-        cards: room.hands.get(r.playerId),
-        eval: room.evaluations.get(r.playerId),
-        result: r.result,
-        coinsChange: r.amount,
-        coins: p.coins,
-        multiplier: p.multiplier,
-        handName: r.handName
-      };
-    })
+    players: playerResults
   };
 
   room.results = resultData;
   io.to(room.id).emit('round_result', resultData);
 
-  // 重置准备状态
-  for (const [, p] of room.players) {
-    p.ready = false;
-    p.multiplier = 1;
-  }
+  // 标记已完成首轮
+  room.hasPlayedFirstRound = true;
 
-  // 清理本轮数据
+  // 清理并准备下一轮
   setTimeout(() => {
     room.phase = PHASE.WAITING;
     room.banker = null;
     room.hands.clear();
     room.evaluations.clear();
     room.splitResponses.clear();
-    broadcastRoomState(room);
+    room.betResponses.clear();
+
+    // 重置下注对象
+    for (const [, p] of room.players) {
+      p.betTargets = [];
+    }
+
+    // 自动准备：如果已完成过第一轮，所有在线玩家自动进入准备状态
+    if (room.hasPlayedFirstRound) {
+      for (const [, p] of room.players) {
+        if (p.connected) {
+          p.ready = true;
+        } else {
+          p.ready = false;
+        }
+      }
+      broadcastRoomState(room);
+
+      // 检查是否可以自动开始
+      if (checkAllReady(room)) {
+        io.to(room.id).emit('system_msg', { message: '自动准备完成，下一轮即将开始！' });
+        setTimeout(() => startGrabBankerPhase(room), 2000);
+      }
+    } else {
+      for (const [, p] of room.players) {
+        p.ready = false;
+      }
+      broadcastRoomState(room);
+    }
   }, 8000);
 }
 
 function checkAllReady(room) {
   if (room.players.size < 2) return false;
+  let connectedCount = 0;
   for (const [, p] of room.players) {
-    if (!p.ready || !p.connected) return false;
+    if (p.connected) {
+      connectedCount++;
+      if (!p.ready) return false;
+    }
   }
-  return true;
+  return connectedCount >= 2;
 }
 
 // ======================== Socket.IO 事件处理 ========================
@@ -354,7 +438,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // 检查是否已经在某个房间
     if (playerSockets.has(socket.id)) {
       socket.emit('error_msg', { message: '你已经在一个房间中了' });
       return;
@@ -376,7 +459,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // 检查昵称是否重复
     for (const [, p] of room.players) {
       if (p.nickname === nickname) {
         socket.emit('error_msg', { message: '昵称已被使用，请换一个' });
@@ -430,34 +512,46 @@ io.on('connection', (socket) => {
       message: `${player.nickname} ${grab ? '抢庄' : '不抢'}`
     });
 
-    // 所有人都回应了
     if (room.grabBankerResponses.size === room.players.size) {
       resolveGrabBanker(room);
     }
   });
 
-  // 选倍数
-  socket.on('choose_multiplier', ({ multiplier }) => {
+  // 选下注对象（替代原来的选倍数）
+  socket.on('choose_bet', ({ targets }) => {
     const info = playerSockets.get(socket.id);
     if (!info) return;
     const room = rooms.get(info.roomId);
-    if (!room || room.phase !== PHASE.CHOOSE_MULTI) return;
+    if (!room || room.phase !== PHASE.CHOOSE_BET) return;
     if (info.playerId === room.banker) return;
 
-    const validMultipliers = [1, 2, 3, 4, 5];
-    if (!validMultipliers.includes(multiplier)) return;
+    // 验证下注对象合法性：必须是闲家ID
+    const validTargets = [];
+    for (const tid of targets) {
+      if (room.players.has(tid) && tid !== room.banker) {
+        validTargets.push(tid);
+      }
+    }
 
-    room.multiplierResponses.set(info.playerId, multiplier);
-    room.players.get(info.playerId).multiplier = multiplier;
+    if (validTargets.length === 0) {
+      validTargets.push(info.playerId); // 默认下注自己
+    }
+
+    room.betResponses.set(info.playerId, validTargets);
+    room.players.get(info.playerId).betTargets = validTargets;
 
     const player = room.players.get(info.playerId);
+    const targetNames = validTargets.map(tid => {
+      const tp = room.players.get(tid);
+      return tp ? (tid === info.playerId ? '自己' : tp.nickname) : '?';
+    });
     io.to(room.id).emit('system_msg', {
-      message: `${player.nickname} 选择了 ${multiplier} 倍`
+      message: `${player.nickname} 下注了 ${targetNames.join('、')}（${validTargets.length}注）`
     });
 
     // 所有闲家都选了
     const nonBankerCount = room.players.size - 1;
-    const respondedCount = room.multiplierResponses.size - 1; // 减去庄家
+    const respondedCount = room.betResponses.size - 1;
     if (respondedCount >= nonBankerCount) {
       startDealPhase(room);
     }
@@ -473,11 +567,9 @@ io.on('connection', (socket) => {
     const cards = room.hands.get(info.playerId);
     if (!cards) return;
 
-    // 验证分牌
     if (group3 && group3.length === 3) {
       const validation = gameEngine.validatePlayerSplit(cards, group3);
       if (validation.valid) {
-        // 使用玩家选择的分法重新评估
         const eval_ = room.evaluations.get(info.playerId);
         eval_.group3 = validation.group3;
         eval_.group2 = validation.group2;
@@ -490,13 +582,12 @@ io.on('connection', (socket) => {
 
     room.splitResponses.set(info.playerId, { group3 });
 
-    // 所有人都分完了
     if (room.splitResponses.size === room.players.size) {
       resolveRound(room);
     }
   });
 
-  // 自动分牌（使用最优方案）
+  // 自动分牌
   socket.on('auto_split', () => {
     const info = playerSockets.get(socket.id);
     if (!info) return;
@@ -508,6 +599,56 @@ io.on('connection', (socket) => {
     if (room.splitResponses.size === room.players.size) {
       resolveRound(room);
     }
+  });
+
+  // 扔互动道具（鸡蛋/牛粪/鲜花）
+  socket.on('throw_item', ({ targetId, itemType, count }) => {
+    const info = playerSockets.get(socket.id);
+    if (!info) return;
+    const room = rooms.get(info.roomId);
+    if (!room) return;
+
+    const player = room.players.get(info.playerId);
+    if (!player) return;
+
+    const validItems = ['egg', 'poop', 'flower'];
+    if (!validItems.includes(itemType)) return;
+
+    const throwCount = Math.min(Math.max(1, count || 1), 99);
+
+    // 检查积分
+    if (player.points < throwCount) {
+      socket.emit('error_msg', { message: `积分不足！需要 ${throwCount} 积分，你只有 ${player.points} 积分` });
+      return;
+    }
+
+    // 检查目标玩家存在
+    if (!room.players.has(targetId)) return;
+
+    // 扣除积分
+    player.points -= throwCount;
+
+    const targetPlayer = room.players.get(targetId);
+    const itemNames = { egg: '鸡蛋', poop: '牛粪', flower: '鲜花' };
+    const itemEmojis = { egg: '🥚', poop: '💩', flower: '🌹' };
+
+    // 广播互动动画
+    io.to(room.id).emit('throw_item_effect', {
+      fromId: info.playerId,
+      fromNickname: player.nickname,
+      targetId,
+      targetNickname: targetPlayer.nickname,
+      itemType,
+      itemEmoji: itemEmojis[itemType],
+      count: throwCount
+    });
+
+    io.to(room.id).emit('system_msg', {
+      message: `${player.nickname} 向 ${targetPlayer.nickname} 扔了 ${throwCount} 个${itemNames[itemType]} ${itemEmojis[itemType]}`
+    });
+
+    // 更新积分显示
+    broadcastRoomState(room);
   });
 
   // 聊天
@@ -533,13 +674,10 @@ io.on('connection', (socket) => {
         player.connected = false;
         io.to(room.id).emit('system_msg', { message: `${info.nickname} 断开了连接` });
 
-        // 如果在游戏中逃跑
         if (room.phase !== PHASE.WAITING && room.phase !== PHASE.SHOW_RESULT) {
           player.escaped = true;
-          // 扣除押金
           const penalty = room.baseAmount * 3;
           player.coins -= penalty;
-          // 给其他玩家分
           const others = Array.from(room.players.entries()).filter(
             ([pid]) => pid !== info.playerId
           );
@@ -552,14 +690,12 @@ io.on('connection', (socket) => {
           });
         }
 
-        // 如果在等待阶段直接移除
         if (room.phase === PHASE.WAITING) {
           room.players.delete(info.playerId);
         }
 
         broadcastRoomState(room);
 
-        // 如果房间没人了就清理
         let allDisconnected = true;
         for (const [, p] of room.players) {
           if (p.connected) { allDisconnected = false; break; }

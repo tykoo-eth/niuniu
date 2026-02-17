@@ -42,6 +42,10 @@
         <span class="round-badge">第 <span id="round-display">0</span> 轮</span>
         <span class="base-badge">基数 <span id="base-display">100</span></span>
       </div>
+      <div class="my-stats-bar">
+        <span class="coins-badge">💰 <span id="my-coins-top">10000</span></span>
+        <span class="points-badge">⭐ <span id="my-points-top">0</span></span>
+      </div>
       <div class="phase-display" id="phase-display">等待玩家加入...</div>
     </div>
 
@@ -74,13 +78,16 @@
         <div class="my-avatar" id="my-avatar">我</div>
         <div class="my-details">
           <span class="my-name" id="my-name">玩家</span>
-          <span class="my-coins">💰 <span id="my-coins">10000</span></span>
+          <span class="my-coins">💰 <span id="my-coins">10000</span> &nbsp; ⭐ <span id="my-points">0</span></span>
         </div>
         <button id="ready-btn" class="btn btn-ready" style="display:none;">准备</button>
       </div>
       <div class="my-cards" id="my-cards"></div>
       <div class="my-hand-type" id="my-hand-type"></div>
     </div>
+
+    <!-- 互动道具浮层 -->
+    <div class="throw-effects" id="throw-effects"></div>
 
     <!-- 聊天区域 -->
     <div class="chat-area" id="chat-area">

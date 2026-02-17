@@ -15,6 +15,8 @@ let selectedIndices = [];
 let currentPhase = 'waiting';
 let countdownTimer = null;
 let isBanker = false;
+let allPlayers = [];     // 完整玩家列表（含座位号）
+let currentBankerId = null;
 
 // ======================== DOM 元素 ========================
 
@@ -36,6 +38,9 @@ const myCardsDiv = $('my-cards');
 const myHandType = $('my-hand-type');
 const myName = $('my-name');
 const myCoins = $('my-coins');
+const myPoints = $('my-points');
+const myCoinsTop = $('my-coins-top');
+const myPointsTop = $('my-points-top');
 const readyBtn = $('ready-btn');
 const chatToggle = $('chat-toggle');
 const chatPanel = $('chat-panel');
@@ -46,6 +51,7 @@ const systemMessages = $('system-messages');
 const countdownContainer = $('countdown-container');
 const countdownNumber = $('countdown-number');
 const countdownProgress = $('countdown-progress');
+const throwEffects = $('throw-effects');
 
 // ======================== 初始化 ========================
 
@@ -101,6 +107,7 @@ function setupSocketEvents() {
 
   socket.on('banker_decided', (data) => {
     showToast(data.message);
+    currentBankerId = data.bankerId;
   });
 
   socket.on('round_result', (data) => {
@@ -115,6 +122,11 @@ function setupSocketEvents() {
   socket.on('chat_msg', ({ nickname, message, time }) => {
     addChatMessage(nickname, message);
   });
+
+  // 互动道具效果
+  socket.on('throw_item_effect', (data) => {
+    showThrowAnimation(data);
+  });
 }
 
 // ======================== 更新界面 ========================
@@ -123,15 +135,19 @@ function updateRoomState(state) {
   currentPhase = state.phase;
   roundDisplay.textContent = state.roundCount;
   baseDisplay.textContent = state.baseAmount;
+  allPlayers = state.players;
+  currentBankerId = state.banker;
 
-  // 找到自己的信息
   const me = state.players.find(p => p.id === state.myId);
   if (me) {
     myCoins.textContent = me.coins;
+    myPoints.textContent = me.points;
+    myCoinsTop.textContent = me.coins;
+    myPointsTop.textContent = me.points;
     isBanker = me.isBanker;
   }
 
-  // 更新准备按钮
+  // 准备按钮
   if (state.phase === 'waiting') {
     readyBtn.style.display = 'inline-block';
     if (me && me.ready) {
@@ -145,10 +161,10 @@ function updateRoomState(state) {
     readyBtn.style.display = 'none';
   }
 
-  // 更新其他玩家
+  // 其他玩家
   renderOtherPlayers(state.players.filter(p => p.id !== state.myId), state);
 
-  // 更新手牌
+  // 手牌
   if (state.myCards && state.myCards.length > 0) {
     myCards = state.myCards;
     if (currentPhase === 'deal_cards' || currentPhase === 'split_cards') {
@@ -156,7 +172,6 @@ function updateRoomState(state) {
     }
   }
 
-  // 阶段文字
   updatePhaseText(state.phase);
 }
 
@@ -164,7 +179,7 @@ function updatePhaseText(phase) {
   const texts = {
     waiting: '等待玩家准备...',
     grab_banker: '抢庄阶段',
-    choose_multi: '选择倍数',
+    choose_bet: '选择下注对象',
     deal_cards: '发牌中...',
     split_cards: '选牌组牛',
     show_result: '本轮结果'
@@ -177,6 +192,7 @@ function renderOtherPlayers(players, state) {
   for (const p of players) {
     const seat = document.createElement('div');
     seat.className = 'player-seat';
+    seat.dataset.playerId = p.id;
     if (p.isBanker) seat.classList.add('is-banker');
     if (p.ready && state.phase === 'waiting') seat.classList.add('is-ready');
     if (!p.connected) seat.classList.add('disconnected');
@@ -189,15 +205,95 @@ function renderOtherPlayers(players, state) {
       </div>
       <div class="player-name">${escapeHtml(p.nickname)}</div>
       <div class="player-coins">💰 ${p.coins}</div>
+      <div class="player-points-display">⭐ ${p.points}</div>
       ${state.phase === 'waiting'
         ? `<div class="player-status ${p.ready ? 'ready' : 'waiting'}">${p.ready ? '已准备' : '未准备'}</div>`
         : ''}
       ${!p.connected ? '<div class="player-status" style="color:#e74c3c;">已断开</div>' : ''}
+      <div class="throw-btns">
+        <button class="throw-btn" onclick="openThrowMenu('${p.id}','${escapeHtml(p.nickname)}')" title="互动">🎯</button>
+      </div>
     `;
 
     otherPlayers.appendChild(seat);
   }
 }
+
+// ======================== 互动道具系统 ========================
+
+function openThrowMenu(targetId, targetNickname) {
+  const me = allPlayers.find(p => p.id === myId);
+  const myPts = me ? me.points : 0;
+
+  actionPanel.style.display = 'flex';
+  actionPanel.innerHTML = `
+    <div class="action-title">向 ${targetNickname} 扔道具</div>
+    <div class="action-subtitle">当前积分：⭐ ${myPts}（1积分 = 1次）</div>
+    <div class="throw-count-row">
+      <label>数量：</label>
+      <button class="btn btn-small throw-count-adj" onclick="adjustThrowCount(-1)">-</button>
+      <span id="throw-count-val" class="throw-count-val">1</span>
+      <button class="btn btn-small throw-count-adj" onclick="adjustThrowCount(1)">+</button>
+      <button class="btn btn-small throw-count-adj" onclick="setThrowCount(5)">5</button>
+      <button class="btn btn-small throw-count-adj" onclick="setThrowCount(10)">10</button>
+    </div>
+    <div class="action-buttons">
+      <button class="btn btn-throw egg" onclick="doThrow('${targetId}','egg')">🥚 鸡蛋</button>
+      <button class="btn btn-throw poop" onclick="doThrow('${targetId}','poop')">💩 牛粪</button>
+      <button class="btn btn-throw flower" onclick="doThrow('${targetId}','flower')">🌹 鲜花</button>
+    </div>
+    <button class="btn btn-small" onclick="closeThrowMenu()" style="margin-top:8px;background:#555;">关闭</button>
+  `;
+}
+
+function adjustThrowCount(delta) {
+  const el = $('throw-count-val');
+  let val = parseInt(el.textContent) + delta;
+  if (val < 1) val = 1;
+  if (val > 99) val = 99;
+  el.textContent = val;
+}
+
+function setThrowCount(val) {
+  $('throw-count-val').textContent = val;
+}
+
+function doThrow(targetId, itemType) {
+  const count = parseInt($('throw-count-val').textContent) || 1;
+  socket.emit('throw_item', { targetId, itemType, count });
+  closeThrowMenu();
+}
+
+function closeThrowMenu() {
+  // 只在不是游戏操作阶段时关闭
+  if (currentPhase !== 'grab_banker' && currentPhase !== 'choose_bet' && currentPhase !== 'split_cards') {
+    actionPanel.style.display = 'none';
+  } else {
+    // 恢复当前阶段的操作面板
+    actionPanel.style.display = 'none';
+  }
+}
+
+function showThrowAnimation(data) {
+  const { itemEmoji, count, targetNickname, fromNickname } = data;
+  const container = throwEffects;
+
+  for (let i = 0; i < Math.min(count, 20); i++) {
+    setTimeout(() => {
+      const el = document.createElement('div');
+      el.className = 'throw-emoji';
+      el.textContent = itemEmoji;
+      // 随机位置偏移
+      el.style.left = (30 + Math.random() * 40) + '%';
+      el.style.top = (20 + Math.random() * 40) + '%';
+      el.style.animationDelay = (Math.random() * 0.2) + 's';
+      container.appendChild(el);
+      setTimeout(() => el.remove(), 1500);
+    }, i * 80);
+  }
+}
+
+// ======================== 手牌渲染 ========================
 
 function renderMyCards(dealing = false) {
   myCardsDiv.innerHTML = '';
@@ -255,11 +351,9 @@ function toggleCardSelection(index, el) {
 }
 
 function updateSelectionUI() {
-  // 更新提示文字
   const count = selectedIndices.length;
   myHandType.textContent = `已选择 ${count}/3 张牌`;
 
-  // 计算是否能组成牛
   if (count === 3) {
     const sum = selectedIndices.reduce((s, idx) => {
       const card = myCards[idx];
@@ -268,7 +362,6 @@ function updateSelectionUI() {
     }, 0);
 
     if (sum % 10 === 0) {
-      // 计算剩余两张的牛值
       const remaining = [];
       for (let i = 0; i < 5; i++) {
         if (!selectedIndices.includes(i)) remaining.push(i);
@@ -286,7 +379,6 @@ function updateSelectionUI() {
     }
   }
 
-  // 更新底部按钮区
   let splitActions = document.querySelector('.split-actions');
   if (!splitActions && currentPhase === 'split_cards') {
     splitActions = document.createElement('div');
@@ -307,7 +399,6 @@ function updateSelectionUI() {
           confirmBtn.disabled = true;
           confirmBtn.textContent = '已提交';
           myHandType.textContent = '等待其他玩家...';
-          // 禁用卡牌选择
           document.querySelectorAll('.card').forEach(c => {
             c.classList.add('disabled');
             c.style.pointerEvents = 'none';
@@ -348,11 +439,11 @@ function handlePhaseChange(data) {
       startCountdown(data.timeout);
       break;
 
-    case 'choose_multi':
+    case 'choose_bet':
       if (!isBanker) {
-        showChooseMultiplierUI(data);
+        showChooseBetUI(data);
       } else {
-        showActionMessage('你是庄家', '等待闲家选择倍数...');
+        showActionMessage('你是庄家', '等待闲家选择下注对象...');
       }
       startCountdown(data.timeout);
       break;
@@ -380,18 +471,35 @@ function showGrabBankerUI(data) {
   `;
 }
 
-function showChooseMultiplierUI(data) {
+/**
+ * 下注对象选择UI（替代原来的倍数选择）
+ * 显示所有闲家供选择，可多选
+ */
+function showChooseBetUI(data) {
+  const targets = data.betTargets || [];
   actionPanel.style.display = 'flex';
+
+  let targetsHtml = '';
+  for (const t of targets) {
+    const isMe = t.id === myId;
+    const label = isMe ? `${t.nickname}（自己）` : `${t.nickname}`;
+    const checkedAttr = isMe ? 'checked' : '';
+    targetsHtml += `
+      <label class="bet-target-label">
+        <input type="checkbox" class="bet-target-cb" value="${t.id}" ${checkedAttr}>
+        <span class="bet-target-box">
+          <span class="bet-target-seat">${t.seatIndex}号</span>
+          <span class="bet-target-name">${escapeHtml(label)}</span>
+        </span>
+      </label>
+    `;
+  }
+
   actionPanel.innerHTML = `
-    <div class="action-title">选择倍数</div>
-    <div class="action-subtitle">倍数越高，赢得越多，输得也越多</div>
-    <div class="action-buttons">
-      <button class="btn btn-blue" onclick="chooseMultiplier(1)">1倍</button>
-      <button class="btn btn-blue" onclick="chooseMultiplier(2)">2倍</button>
-      <button class="btn btn-gold" onclick="chooseMultiplier(3)">3倍</button>
-      <button class="btn btn-gold" onclick="chooseMultiplier(4)">4倍</button>
-      <button class="btn btn-danger" onclick="chooseMultiplier(5)">5倍</button>
-    </div>
+    <div class="action-title">选择下注对象</div>
+    <div class="action-subtitle">你下注的每个闲家都会独立和庄家比牌，盈亏累加结算</div>
+    <div class="bet-targets-grid">${targetsHtml}</div>
+    <button class="btn btn-gold" onclick="confirmBet()">确认下注</button>
   `;
 }
 
@@ -413,10 +521,20 @@ function grabBanker(grab) {
   `;
 }
 
-function chooseMultiplier(multiplier) {
-  socket.emit('choose_multiplier', { multiplier });
+function confirmBet() {
+  const checkboxes = document.querySelectorAll('.bet-target-cb:checked');
+  const targets = Array.from(checkboxes).map(cb => cb.value);
+
+  if (targets.length === 0) {
+    showToast('请至少选择一个下注对象');
+    return;
+  }
+
+  socket.emit('choose_bet', { targets });
+
+  const count = targets.length;
   actionPanel.innerHTML = `
-    <div class="action-title">已选择 ${multiplier} 倍</div>
+    <div class="action-title">已下注 ${count} 个对象</div>
     <div class="action-subtitle">等待发牌...</div>
   `;
 }
@@ -440,23 +558,21 @@ function showResult(data) {
   resultPanel.style.display = 'block';
   resultPanel.classList.add('show');
 
-  // 移除分牌按钮
   const splitActions = document.querySelector('.split-actions');
   if (splitActions) splitActions.remove();
 
   let html = '<div class="result-title">本轮结果</div>';
 
-  // 庄家结果
-  html += renderResultRow(data.banker, true);
+  // 庄家
+  html += renderResultRow(data.banker, true, null);
 
-  // 闲家结果
+  // 闲家
   for (const p of data.players) {
-    html += renderResultRow(p, false);
+    html += renderResultRow(p, false, p.betDetails);
   }
 
   resultPanel.innerHTML = html;
 
-  // 8秒后隐藏
   setTimeout(() => {
     resultPanel.style.display = 'none';
     resultPanel.classList.remove('show');
@@ -467,10 +583,10 @@ function showResult(data) {
   }, 8000);
 }
 
-function renderResultRow(player, isBankerRow) {
+function renderResultRow(player, isBankerRow, betDetails) {
   const evalData = player.eval;
   const cards = player.cards || [];
-  const change = isBankerRow ? player.coinsChange : player.coinsChange;
+  const change = player.coinsChange;
   const isWin = change > 0;
   const rowClass = isBankerRow ? 'is-banker' : (isWin ? 'win' : 'lose');
 
@@ -490,30 +606,51 @@ function renderResultRow(player, isBankerRow) {
   const changeSign = change > 0 ? '+' : '';
   const changeClass = change > 0 ? 'positive' : 'negative';
 
+  // 下注详情
+  let betInfoHtml = '';
+  if (!isBankerRow && betDetails && betDetails.length > 0) {
+    const betSummary = betDetails.map(bd => {
+      const icon = bd.result === 'win' ? '✅' : '❌';
+      return `${icon}${bd.targetNickname}`;
+    }).join(' ');
+    betInfoHtml = `<div class="result-bet-details">${betSummary}</div>`;
+  }
+
+  let roleLabel = '';
+  if (isBankerRow) {
+    roleLabel = '庄家';
+  } else {
+    const betCount = player.betCount || 1;
+    roleLabel = `闲家（${betCount}注）`;
+  }
+
   return `
     <div class="result-row ${rowClass}">
       <div class="result-player-info">
         <span class="result-player-name">${escapeHtml(player.nickname)}</span>
         <span class="result-role-badge ${isBankerRow ? 'banker' : 'player'}">
-          ${isBankerRow ? '庄家' : `闲家${player.multiplier ? ' x' + player.multiplier : ''}`}
+          ${roleLabel}
         </span>
       </div>
       <div class="result-cards">${cardsHtml}</div>
       <div class="result-hand-type" style="color:${getHandTypeColor(evalData ? evalData.handType : 0)}">
         ${evalData ? evalData.handName : ''}
       </div>
-      <div class="result-coins-change ${changeClass}">
-        ${changeSign}${change}
+      <div class="result-right">
+        <div class="result-coins-change ${changeClass}">
+          ${changeSign}${change}
+        </div>
+        ${betInfoHtml}
       </div>
     </div>
   `;
 }
 
 function getHandTypeColor(handType) {
-  if (handType >= 11) return '#ffd700'; // 特殊牌型-金色
-  if (handType >= 8) return '#e74c3c';  // 牛八牛九-红色
-  if (handType >= 1) return '#27ae60';  // 有牛-绿色
-  return '#95a5a6'; // 没牛-灰色
+  if (handType >= 11) return '#ffd700';
+  if (handType >= 8) return '#e74c3c';
+  if (handType >= 1) return '#27ae60';
+  return '#95a5a6';
 }
 
 // ======================== 倒计时 ========================
