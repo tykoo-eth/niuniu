@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🐂 斗牛 - 多人在线牛牛</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- =============== 登录界面 =============== -->
+  <div id="login-screen" class="screen active">
+    <div class="login-container">
+      <div class="login-header">
+        <div class="logo">🐂</div>
+        <h1>斗牛</h1>
+        <p class="subtitle">多人在线牛牛扑克</p>
+      </div>
+      <div class="login-form">
+        <div class="input-group">
+          <label>昵称</label>
+          <input type="text" id="nickname-input" placeholder="输入你的昵称" maxlength="8" autocomplete="off">
+        </div>
+        <div class="input-group">
+          <label>房间号</label>
+          <input type="text" id="room-input" placeholder="输入房间号（如 888）" maxlength="10" autocomplete="off">
+        </div>
+        <button id="join-btn" class="btn btn-primary btn-large">进入房间</button>
+      </div>
+      <div class="login-tips">
+        <p>提示：输入相同房间号即可与朋友一起游戏</p>
+        <p>支持 2-6 人同时游戏</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== 游戏界面 =============== -->
+  <div id="game-screen" class="screen">
+    <!-- 顶部信息栏 -->
+    <div class="top-bar">
+      <div class="room-info">
+        <span class="room-badge">房间 <span id="room-id-display"></span></span>
+        <span class="round-badge">第 <span id="round-display">0</span> 轮</span>
+        <span class="base-badge">基数 <span id="base-display">100</span></span>
+      </div>
+      <div class="phase-display" id="phase-display">等待玩家加入...</div>
+    </div>
+
+    <!-- 其他玩家区域 -->
+    <div class="other-players" id="other-players"></div>
+
+    <!-- 游戏桌面 -->
+    <div class="game-table">
+      <!-- 倒计时 -->
+      <div class="countdown-container" id="countdown-container" style="display:none;">
+        <div class="countdown-ring">
+          <svg viewBox="0 0 100 100">
+            <circle class="countdown-bg" cx="50" cy="50" r="45"/>
+            <circle class="countdown-progress" id="countdown-progress" cx="50" cy="50" r="45"/>
+          </svg>
+          <span class="countdown-number" id="countdown-number">10</span>
+        </div>
+      </div>
+
+      <!-- 操作面板 -->
+      <div class="action-panel" id="action-panel" style="display:none;"></div>
+
+      <!-- 结果面板 -->
+      <div class="result-panel" id="result-panel" style="display:none;"></div>
+    </div>
+
+    <!-- 我的手牌区域 -->
+    <div class="my-area">
+      <div class="my-info">
+        <div class="my-avatar" id="my-avatar">我</div>
+        <div class="my-details">
+          <span class="my-name" id="my-name">玩家</span>
+          <span class="my-coins">💰 <span id="my-coins">10000</span></span>
+        </div>
+        <button id="ready-btn" class="btn btn-ready" style="display:none;">准备</button>
+      </div>
+      <div class="my-cards" id="my-cards"></div>
+      <div class="my-hand-type" id="my-hand-type"></div>
+    </div>
+
+    <!-- 聊天区域 -->
+    <div class="chat-area" id="chat-area">
+      <div class="chat-toggle" id="chat-toggle">💬</div>
+      <div class="chat-panel" id="chat-panel" style="display:none;">
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-area">
+          <input type="text" id="chat-input" placeholder="发送消息..." maxlength="50">
+          <button id="chat-send-btn" class="btn btn-small">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 系统消息 -->
+    <div class="system-messages" id="system-messages"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
